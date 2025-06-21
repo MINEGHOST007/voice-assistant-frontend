@@ -160,6 +160,61 @@ type PermissionSettings = {
   screen: boolean;
 };
 
+// Helper to gracefully leave the room, stop local media and shutdown the LiveKit room on the server
+async function gracefulDisconnectAndShutdown(room: Room) {
+  try {
+    // If we are not connected there is nothing to do
+    if (room.state !== "connected") {
+      console.log("⚠️  gracefulDisconnectAndShutdown called while room is not connected");
+      return;
+    }
+
+    // 1️⃣ Unpublish & stop every local track (audio / video / screenshare)
+    const publicationMap: Map<string, any> =
+      (room.localParticipant as any).trackPublications || (room.localParticipant as any).tracks;
+
+    if (publicationMap) {
+      for (const publication of Array.from(publicationMap.values())) {
+        const track = publication.track;
+        if (track) {
+          try {
+            room.localParticipant.unpublishTrack(track);
+            track.stop();
+          } catch (trackErr) {
+            console.error("❌ Error cleaning up local track", trackErr);
+          }
+        }
+      }
+    }
+
+    // 2️⃣ Disconnect from the room
+    await room.disconnect();
+    console.log("✅ Graceful disconnect completed");
+
+    // 3️⃣ Ask backend to delete the room so the session ends on the server as well
+    const roomName = room.name;
+    if (roomName) {
+      try {
+        const response = await fetch("/api/shutdown-room", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ roomName }),
+        });
+        const result = await response.json();
+        if (response.ok) {
+          console.log("✅ Room deletion successful:", result.message);
+        } else {
+          console.error("❌ Room deletion failed:", result.error);
+        }
+      } catch (err) {
+        console.error("❌ Failed to call shutdown-room endpoint:", err);
+      }
+    }
+  } catch (err) {
+    console.error("❌ gracefulDisconnectAndShutdown failed:", err);
+  }
+}
+
 export default function Page() {
   const [room] = useState(new Room());
   const [selectedPermissions, setSelectedPermissions] = useState<PermissionSettings | null>(null);
@@ -197,30 +252,9 @@ export default function Page() {
     if (shouldAutoDisconnect && room.state === "connected") {
       console.log("🚨 Auto disconnecting due to session shutdown...");
       const autoDisconnect = async () => {
-        const roomName = room.name;
         try {
-          await room.disconnect();
+          await gracefulDisconnectAndShutdown(room);
           console.log("✅ Auto disconnect completed");
-
-          // Now delete the room since session is complete
-          if (roomName) {
-            console.log("🔥 Deleting room after session shutdown...");
-            const response = await fetch("/api/shutdown-room", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ roomName }),
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-              console.log("✅ Room deletion successful:", result.message);
-            } else {
-              console.error("❌ Room deletion failed:", result.error);
-            }
-          }
         } catch (error) {
           console.error("❌ Auto disconnect failed:", error);
         }
@@ -395,8 +429,8 @@ export default function Page() {
     room.on(RoomEvent.MediaDevicesError, onDeviceFailure);
 
     // Add debug listener for all disconnect events
-    room.on(RoomEvent.Disconnected, () => {
-      console.log("🔌 Room disconnected event fired!");
+    room.on(RoomEvent.Disconnected, (reason) => {
+      console.log(`🔌 Room disconnected, reason: ${reason}`);
     });
 
     // Graceful shutdown on page unload/refresh/close
@@ -418,16 +452,10 @@ export default function Page() {
         }
 
         // Disconnect from room
-        try {
-          await room.disconnect();
-        } catch (error) {
-          console.error("❌ Failed to disconnect on unload:", error);
-        }
+        console.log("👋 Performing graceful disconnect...");
+        await gracefulDisconnectAndShutdown(room);
       }
     };
-
-    // Add event listener for page unload
-    window.addEventListener("beforeunload", handleBeforeUnload);
 
     return () => {
       console.log("🧹 Cleaning up room event listeners and RPC methods");
@@ -581,8 +609,13 @@ function ControlBar(props: { onConnectButtonClicked: () => void }) {
       console.log("✅ RPC close signal sent - waiting for agent to send session_shutdown");
       console.log("⏳ Agent will now process shutdown and send session_shutdown RPC...");
 
-      // That's it! Don't disconnect here. Let the agent send session_shutdown RPC
-      // which will trigger the auto-disconnect in the useEffect
+      // 🚨 Watchdog: force disconnect if agent doesn't shut us down within 10 seconds
+      setTimeout(async () => {
+        if (room.state === "connected") {
+          console.log("⏰ Watchdog timeout reached – forcing graceful disconnect");
+          await gracefulDisconnectAndShutdown(room);
+        }
+      }, 1_000);
     } catch (error) {
       console.error("❌ Error sending close signal:", error);
 
@@ -590,8 +623,8 @@ function ControlBar(props: { onConnectButtonClicked: () => void }) {
       console.log("🚨 RPC failed, falling back to manual disconnect in 5 seconds...");
       setTimeout(async () => {
         try {
-          await room.disconnect();
-          console.log("✅ Manual fallback disconnect completed");
+          await gracefulDisconnectAndShutdown(room);
+          console.log("✅ Manual fallback graceful disconnect completed");
         } catch (disconnectError) {
           console.error("❌ Manual fallback disconnect failed:", disconnectError);
         }
