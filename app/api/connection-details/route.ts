@@ -163,7 +163,7 @@ export async function GET(request: Request) {
       });
       return NextResponse.json(data, { headers });
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`Failed to create room: ${e}`);
       throw e;
     }
@@ -300,7 +300,7 @@ export async function POST(request: Request) {
       });
       return NextResponse.json(data, { headers });
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`Failed to create room: ${e}`);
       throw e;
     }

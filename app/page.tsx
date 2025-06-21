@@ -5,7 +5,6 @@ import { NoAgentNotification } from "@/components/NoAgentNotification";
 import TranscriptionView from "@/components/TranscriptionView";
 import {
   BarVisualizer,
-  DisconnectButton,
   RoomAudioRenderer,
   RoomContext,
   VideoTrack,
@@ -36,13 +35,20 @@ interface HelloWorldResponse {
 
 interface InteractionRequest {
   event: string;
-  data: Record<string, any>;
+  data: Record<string, unknown>;
 }
 
 interface InteractionResponse {
   success: boolean;
   message?: string;
-  data?: any;
+  data?: Record<string, unknown>;
+}
+
+interface RpcLogEntry {
+  id: string;
+  timestamp: number;
+  event: string;
+  data: Record<string, unknown>;
 }
 
 // RPC Client for agent communication
@@ -86,7 +92,10 @@ class AgentRPCClient {
     }
   }
 
-  async callInteraction(event: string, data: Record<string, any>): Promise<InteractionResponse> {
+  async callInteraction(
+    event: string,
+    data: Record<string, unknown>
+  ): Promise<InteractionResponse> {
     try {
       const agentParticipant = Array.from(this.room.remoteParticipants.values()).find(
         (p) => p.identity.includes("voice_assistant") || p.identity.includes("agent")
@@ -154,12 +163,10 @@ type PermissionSettings = {
 export default function Page() {
   const [room] = useState(new Room());
   const [selectedPermissions, setSelectedPermissions] = useState<PermissionSettings | null>(null);
-  const [rpcLogs, setRpcLogs] = useState<
-    Array<{ id: string; timestamp: number; event: string; data: any }>
-  >([]);
+  const [rpcLogs, setRpcLogs] = useState<RpcLogEntry[]>([]);
   const [shouldAutoDisconnect, setShouldAutoDisconnect] = useState(false);
 
-  const addRpcLog = useCallback((event: string, data: any) => {
+  const addRpcLog = useCallback((event: string, data: Record<string, unknown>) => {
     const currentTimeMs = Date.now();
     const logEntry = {
       id: Math.random().toString(36),
@@ -334,17 +341,20 @@ export default function Page() {
     console.log("🔧 Setting up room event listeners and RPC methods");
 
     // Register RPC method to receive session events
-    const handleAgentInteraction = async (data: any): Promise<string> => {
+    const handleAgentInteraction = async (data: unknown): Promise<string> => {
       try {
-        console.log("� Session Event RPC Received:", data);
+        console.log("📨 Session Event RPC Received:", data);
 
         // Handle the RPC data
-        let eventData: any;
+        let eventData: Record<string, unknown>;
         if (typeof data === "object" && data !== null && "payload" in data) {
-          const payload = (data as any).payload;
-          eventData = typeof payload === "string" ? JSON.parse(payload) : payload;
+          const payload = (data as Record<string, unknown>).payload;
+          eventData =
+            typeof payload === "string"
+              ? JSON.parse(payload)
+              : (payload as Record<string, unknown>);
         } else {
-          eventData = data;
+          eventData = data as Record<string, unknown>;
         }
 
         console.log("📨 Parsed session event:", eventData);
@@ -353,7 +363,18 @@ export default function Page() {
         let eventType: string;
         if (eventData && typeof eventData === "object") {
           // Check for top-level 'type' field first (new format)
-          eventType = eventData.type || eventData.event_type || eventData.event || "unknown";
+          const type = eventData.type;
+          const eventTypeField = eventData.event_type;
+          const event = eventData.event;
+
+          eventType =
+            typeof type === "string"
+              ? type
+              : typeof eventTypeField === "string"
+                ? eventTypeField
+                : typeof event === "string"
+                  ? event
+                  : "unknown";
         } else {
           eventType = "unknown";
         }
@@ -379,7 +400,8 @@ export default function Page() {
     });
 
     // Graceful shutdown on page unload/refresh/close
-    const handleBeforeUnload = async (event: BeforeUnloadEvent) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const handleBeforeUnload = async (_event: BeforeUnloadEvent) => {
       if (room.state === "connected") {
         console.log("🚨 Page unloading - attempting graceful disconnect");
 
@@ -413,7 +435,7 @@ export default function Page() {
       room.unregisterRpcMethod("interaction");
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [room, addRpcLog]);
+  }, [room, addRpcLog, onDeviceFailure]);
 
   return (
     <main data-lk-theme="default" className="h-full grid content-center bg-[var(--lk-bg)]">
@@ -435,7 +457,7 @@ function SimpleVoiceAssistant(props: {
   onConnectButtonClicked: () => void;
   onPermissionSelected: (permissions: PermissionSettings) => void;
   selectedPermissions: PermissionSettings | null;
-  rpcLogs: Array<{ id: string; timestamp: number; event: string; data: any }>;
+  rpcLogs: RpcLogEntry[];
 }) {
   const { state: agentState } = useVoiceAssistant();
 
@@ -696,9 +718,7 @@ function PermissionSelector(props: {
   );
 }
 
-function RpcLogger(props: {
-  logs: Array<{ id: string; timestamp: number; event: string; data: any }>;
-}) {
+function RpcLogger(props: { logs: RpcLogEntry[] }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
