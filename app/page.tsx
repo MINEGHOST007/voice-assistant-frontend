@@ -14,6 +14,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LocalTrack,
+  TrackPublication,
   createLocalAudioTrack,
   createLocalScreenTracks,
   createLocalVideoTrack,
@@ -170,19 +171,27 @@ async function gracefulDisconnectAndShutdown(room: Room) {
     }
 
     // 1️⃣ Unpublish & stop every local track (audio / video / screenshare)
-    const publicationMap: Map<string, any> =
-      (room.localParticipant as any).trackPublications || (room.localParticipant as any).tracks;
+    const publicationMap: Map<string, TrackPublication> = (
+      room.localParticipant as unknown as {
+        trackPublications?: Map<string, TrackPublication>;
+        tracks?: Map<string, TrackPublication>;
+      }
+    ).trackPublications ??
+      (
+        room.localParticipant as unknown as {
+          tracks?: Map<string, TrackPublication>;
+        }
+      ).tracks ?? new Map<string, TrackPublication>();
 
-    if (publicationMap) {
-      for (const publication of Array.from(publicationMap.values())) {
-        const track = publication.track;
-        if (track) {
-          try {
-            room.localParticipant.unpublishTrack(track);
-            track.stop();
-          } catch (trackErr) {
-            console.error("❌ Error cleaning up local track", trackErr);
-          }
+    for (const publication of Array.from(publicationMap.values())) {
+      const track = publication.track;
+      if (track) {
+        try {
+          // Cast to expected type for unpublishTrack signature
+          room.localParticipant.unpublishTrack(track as unknown as MediaStreamTrack);
+          track.stop();
+        } catch (trackErr) {
+          console.error("❌ Error cleaning up local track", trackErr);
         }
       }
     }
