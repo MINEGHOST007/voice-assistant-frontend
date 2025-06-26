@@ -130,10 +130,50 @@ async function handleRequest(permissions: PermissionRequest) {
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const permissions: PermissionRequest = {
-      audio: true,
-      video: searchParams.get("video") === "true",
-      screen: searchParams.get("screen") === "true",
+    const audioPermission = searchParams.get('audio') === 'true';
+    const videoPermission = searchParams.get('video') === 'true';
+    const screenPermission = searchParams.get('screen') === 'true';
+
+    // Generate participant and room names
+    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
+
+    // First create session
+    const studyId = "3_voice_sections_1749236892371";
+    const participantId = Math.random().toString(36).substring(2, 12);
+    const sessionResponse = await createSessionAPI(studyId, participantId);
+
+    // Room metadata payload with updated fields from session response
+    //       llm_config: "pc-modera-ce0173",
+    const payload = {
+      agentId: "",
+      organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      callId: roomName,
+      studyId: sessionResponse.data.studyId,
+      participantId: sessionResponse.data.participantId,
+      sessionId: sessionResponse.data.sessionId,
+      tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      name: "Sankeerth",
+      timestamp: Date.now(),
+      callType: "web",
+      phoneNumber: "",
+      user_plan: "dev",
+      isTest: false,
+      preview: false,
+      permissions: {
+        audio: audioPermission,
+        video: videoPermission,
+        screen: screenPermission
+      },
+      device: {
+        height: 1361,
+        width: 1674,
+        deviceType: "desktop",
+        browser: "Chrome",
+        browserVersion: "137"
+      },
+      recordingStartTimestamp: Date.now(),
+      thread_ts: sessionResponse.data.thread_ts
     };
     return await handleRequest(permissions);
   } catch (error: any) {
@@ -144,11 +184,65 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const reqBody = await request.json();
-    const permissions: PermissionRequest = {
-      audio: true,
-      video: !!reqBody.video,
-      screen: !!reqBody.screen,
+    if (LIVEKIT_URL === undefined) {
+      throw new Error("LIVEKIT_URL is not defined");
+    }
+    if (API_KEY === undefined) {
+      throw new Error("LIVEKIT_API_KEY is not defined");
+    }
+    if (API_SECRET === undefined) {
+      throw new Error("LIVEKIT_API_SECRET is not defined");
+    }
+
+    // Get permissions from request body
+    const { audio: audioPermission, video: videoPermission, screen: screenPermission }: PermissionRequest = await request.json();
+
+    console.log('🎯 Received permissions:', { audioPermission, videoPermission, screenPermission });
+
+    // Validate permissions are boolean
+    if (typeof audioPermission !== 'boolean' || typeof videoPermission !== 'boolean' || typeof screenPermission !== 'boolean') {
+      throw new Error('Invalid permission types - must be boolean');
+    }
+
+    // Generate participant and room names
+    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
+
+    // First create session
+    const studyId = "3_voice_sections_1749236892371";
+    const participantId = Math.random().toString(36).substring(2, 12);
+    const sessionResponse = await createSessionAPI(studyId, participantId);
+
+    // Room metadata payload with updated fields from session response
+    const payload = {
+      agentId: "",
+      organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      callId: roomName,
+      studyId: sessionResponse.data.studyId,
+      participantId: sessionResponse.data.participantId,
+      sessionId: sessionResponse.data.sessionId,
+      tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      name: "Sankeerth",
+      timestamp: Date.now(),
+      callType: "web",
+      phoneNumber: "",
+      user_plan: "dev",
+      isTest: false,
+      preview: false,
+      permissions: {
+        audio: audioPermission,
+        video: videoPermission,
+        screen: screenPermission
+      },
+      device: {
+        height: 1361,
+        width: 1674,
+        deviceType: "desktop",
+        browser: "Chrome",
+        browserVersion: "137"
+      },
+      recordingStartTimestamp: Date.now(),
+      thread_ts: sessionResponse.data.thread_ts
     };
     return await handleRequest(permissions);
   } catch (error: any) {
