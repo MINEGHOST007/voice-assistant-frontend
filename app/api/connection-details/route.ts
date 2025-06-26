@@ -1,13 +1,13 @@
-import { AccessToken, AccessTokenOptions, VideoGrant, RoomServiceClient, CreateOptions } from "livekit-server-sdk";
 import { NextResponse } from "next/server";
 
-// NOTE: you are expected to define the following environment variables in `.env.local`:
-const API_KEY = process.env.LIVEKIT_API_KEY;
-const API_SECRET = process.env.LIVEKIT_API_SECRET;
+// Environment variables
 const LIVEKIT_URL = process.env.LIVEKIT_URL;
 
-// don't cache the results
+// Do not cache
 export const revalidate = 0;
+
+// Helper to pause execution – useful for debugging
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export type ConnectionDetails = {
   serverUrl: string;
@@ -27,287 +27,132 @@ export type PermissionRequest = {
   screen: boolean;
 };
 
-async function createSessionAPI(studyId: string, participantId: string) {
-  const response = await fetch('https://dev.userology.co/participant/api/session/' + studyId + '/create', {
-    method: 'POST',
-    headers: {
-      'accept': 'application/json',
-      'content-type': 'application/json',
-      'origin': 'https://participant-dev.userology.co',
-      'x-tenant-id': 't1-8f9edb37-58f8-49fe-83f8-2116a10af5d2'
+// ---------------------------------------------------------------------------
+// Helper – call the new backend create-session endpoint which **already**
+// provisions a LiveKit room + participant token. We simply forward those
+// details to the frontend.
+// ---------------------------------------------------------------------------
+
+async function callCreateSessionAPI(options: {
+  video: boolean;
+  screen: boolean;
+}) {
+  const studyId = "3_voice_sections_1749236892371"; // TODO: externalise when needed
+  const participantId = Math.random().toString(36).substring(2, 12);
+
+  const requestBody = {
+    studyId,
+    email: "N/A",
+    name: "Voice Assistant User",
+    participantId,
+    contact: participantId,
+    deviceDetails: {
+      height: 1361,
+      width: 1674,
+      deviceType: "desktop",
+      browser: "Chrome",
+      browserVersion: "137",
     },
-    body: JSON.stringify({
-      studyId,
-      email: "N/A",
-      name: "Sankeerth",
-      participantId,
-      contact: participantId,
-      deviceDetails: {
-        height: 1361,
-        width: 1674,
-        deviceType: "desktop",
-        browser: "Chrome",
-        browserVersion: "137"
-      },
-      isTest: false,
-      preview: false,
-      tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2"
-    })
+    preview: false,
+    immediateRestart: false,
+    platform: "livekit",
+    callType: "web",
+    phoneNumber: "",
+    perimissions: {
+      video: options.video,
+      screen: options.screen,
+    },
+  };
+
+  const resp = await fetch(`http://localhost:3001/participant/api/session/${studyId}/create`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: "https://participant-dev.userology.co",
+      "x-tenant-id": "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+    },
+    body: JSON.stringify(requestBody),
   });
 
-  if (!response.ok) {
-    throw new Error('Failed to create session');
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Create session failed – status ${resp.status}: ${errText}`);
   }
 
-  return response.json();
+  return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// REST Handlers (GET & POST) – they differ only in how they receive the
+// permissions, afterwards the flow is identical.
+// ---------------------------------------------------------------------------
+
+async function handleRequest(permissions: PermissionRequest) {
+  if (!LIVEKIT_URL) {
+    throw new Error("LIVEKIT_URL environment variable is not set");
+  }
+
+  // 1️⃣ Call backend to create the session + LiveKit credentials
+  const sessionResp = await callCreateSessionAPI({
+    video: permissions.video,
+    screen: permissions.screen,
+  });
+
+  // ⏱️ Wait 1 minute before continuing so we can observe what happens after the room is created
+  //    NOTE: this will block the response; avoid in production environments with short execution timeouts.
+  await sleep(10_000);
+
+  if (!sessionResp?.data?.livekit) {
+    console.error("LiveKit info missing in create-session response", sessionResp);
+    throw new Error("LiveKit details missing in create-session response");
+  }
+
+  const livekit = sessionResp.data.livekit;
+
+  // 2️⃣ Build object expected by the frontend
+  const conn: ConnectionDetails = {
+    serverUrl: LIVEKIT_URL,
+    roomName: livekit.roomName,
+    participantName: livekit.participant.id,
+    participantToken: livekit.participant.token,
+    permissions: {
+      audio: true,
+      video: permissions.video,
+      screen: permissions.screen,
+    },
+  };
+
+  const headers = new Headers({ "Cache-Control": "no-store" });
+  return NextResponse.json(conn, { headers });
 }
 
 export async function GET(request: Request) {
   try {
-    if (LIVEKIT_URL === undefined) {
-      throw new Error("LIVEKIT_URL is not defined");
-    }
-    if (API_KEY === undefined) {
-      throw new Error("LIVEKIT_API_KEY is not defined");
-    }
-    if (API_SECRET === undefined) {
-      throw new Error("LIVEKIT_API_SECRET is not defined");
-    }
-
-    // Get permissions from query parameters
     const { searchParams } = new URL(request.url);
-    const audioPermission = searchParams.get('audio') === 'true';
-    const videoPermission = searchParams.get('video') === 'true';
-    const screenPermission = searchParams.get('screen') === 'true';
-
-    // Generate participant and room names
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
-    const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
-
-    // First create session
-    const studyId = "3_voice_sections_1749236892371";
-    const participantId = Math.random().toString(36).substring(2, 12);
-    const sessionResponse = await createSessionAPI(studyId, participantId);
-
-    // Room metadata payload with updated fields from session response
-    const payload = {
-      agentId: "",
-      organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
-      callId: roomName,
-      studyId: sessionResponse.data.studyId,
-      participantId: sessionResponse.data.participantId,
-      sessionId: sessionResponse.data.sessionId,
-      tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
-      name: "Sankeerth",
-      llm_config: "pc-modera-ce0173",
-      timestamp: Date.now(),
-      callType: "web",
-      phoneNumber: "",
-      user_plan: "dev",
-      isTest: false,
-      preview: false,
-      permissions: {
-        audio: audioPermission,
-        video: videoPermission,
-        screen: screenPermission
-      },
-      device: {
-        height: 1361,
-        width: 1674,
-        deviceType: "desktop",
-        browser: "Chrome",
-        browserVersion: "137"
-      },
-      recordingStartTimestamp: Date.now(),
-      thread_ts: sessionResponse.data.thread_ts
+    const permissions: PermissionRequest = {
+      audio: true,
+      video: searchParams.get("video") === "true",
+      screen: searchParams.get("screen") === "true",
     };
-
-    // Create room and set metadata before generating token
-    const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
-
-    try {
-      const metadataString = JSON.stringify(payload);
-      console.log('Creating room with metadata:', metadataString);
-
-      const createRoomOpts: CreateOptions = {
-        name: roomName,
-        metadata: metadataString,
-        emptyTimeout: 10 * 60,
-        maxParticipants: 2
-      };
-
-      await roomService.createRoom(createRoomOpts);
-      console.log(`Created room ${roomName} with metadata`);
-
-      const participantToken = await createParticipantToken(
-        {
-          identity: participantIdentity,
-        },
-        roomName
-      );
-
-      const data: ConnectionDetails = {
-        serverUrl: LIVEKIT_URL,
-        roomName,
-        participantToken: participantToken,
-        participantName: participantIdentity,
-        permissions: {
-          audio: audioPermission,
-          video: videoPermission,
-          screen: screenPermission
-        }
-      };
-
-      const headers = new Headers({
-        "Cache-Control": "no-store",
-      });
-      return NextResponse.json(data, { headers });
-
-    } catch (e: unknown) {
-      console.error(`Failed to create room: ${e}`);
-      throw e;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(error);
-      return new NextResponse(error.message, { status: 500 });
-    }
+    return await handleRequest(permissions);
+  } catch (error: any) {
+    console.error(error);
+    return new NextResponse(error.message ?? "Unknown error", { status: 500 });
   }
-}
-
-function createParticipantToken(userInfo: AccessTokenOptions, roomName: string) {
-  const at = new AccessToken(API_KEY, API_SECRET, {
-    ...userInfo,
-    ttl: "15m",
-  });
-  const grant: VideoGrant = {
-    room: roomName,
-    roomJoin: true,
-    canPublish: true,
-    canPublishData: true,
-    canSubscribe: true,
-  };
-  at.addGrant(grant);
-  return at.toJwt();
 }
 
 export async function POST(request: Request) {
   try {
-    if (LIVEKIT_URL === undefined) {
-      throw new Error("LIVEKIT_URL is not defined");
-    }
-    if (API_KEY === undefined) {
-      throw new Error("LIVEKIT_API_KEY is not defined");
-    }
-    if (API_SECRET === undefined) {
-      throw new Error("LIVEKIT_API_SECRET is not defined");
-    }
-
-    // Get permissions from request body
-    const { audio: audioPermission, video: videoPermission, screen: screenPermission }: PermissionRequest = await request.json();
-
-    console.log('🎯 Received permissions:', { audioPermission, videoPermission, screenPermission });
-
-    // Validate permissions are boolean
-    if (typeof audioPermission !== 'boolean' || typeof videoPermission !== 'boolean' || typeof screenPermission !== 'boolean') {
-      throw new Error('Invalid permission types - must be boolean');
-    }
-
-    // Generate participant and room names
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
-    const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
-
-    // First create session
-    const studyId = "3_voice_sections_1749236892371";
-    const participantId = Math.random().toString(36).substring(2, 12);
-    const sessionResponse = await createSessionAPI(studyId, participantId);
-
-    // Room metadata payload with updated fields from session response
-    const payload = {
-      agentId: "",
-      organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
-      callId: roomName,
-      llm_config: "pc-modera-ce0173",
-      studyId: sessionResponse.data.studyId,
-      participantId: sessionResponse.data.participantId,
-      sessionId: sessionResponse.data.sessionId,
-      tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
-      name: "Sankeerth",
-      timestamp: Date.now(),
-      callType: "web",
-      phoneNumber: "",
-      user_plan: "dev",
-      isTest: false,
-      preview: false,
-      permissions: {
-        audio: audioPermission,
-        video: videoPermission,
-        screen: screenPermission
-      },
-      device: {
-        height: 1361,
-        width: 1674,
-        deviceType: "desktop",
-        browser: "Chrome",
-        browserVersion: "137"
-      },
-      recordingStartTimestamp: Date.now(),
-      thread_ts: sessionResponse.data.thread_ts
+    const reqBody = await request.json();
+    const permissions: PermissionRequest = {
+      audio: true,
+      video: !!reqBody.video,
+      screen: !!reqBody.screen,
     };
-
-    // Create room and set metadata before generating token
-    const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
-
-    try {
-      const metadataString = JSON.stringify(payload);
-      console.log('🎯 Creating room with metadata permissions:', payload.permissions);
-      console.log('📋 Full metadata:', metadataString);
-
-      const createRoomOpts: CreateOptions = {
-        name: roomName,
-        metadata: metadataString,
-        emptyTimeout: 10 * 60,
-        maxParticipants: 2
-      };
-
-      await roomService.createRoom(createRoomOpts);
-      console.log(`✅ Created room ${roomName} with metadata`);
-
-      // Ensure metadata propagation with delay before token generation
-      await new Promise(resolve => setTimeout(resolve, 200));
-
-      const participantToken = await createParticipantToken(
-        {
-          identity: participantIdentity,
-        },
-        roomName
-      );
-
-      const data: ConnectionDetails = {
-        serverUrl: LIVEKIT_URL,
-        roomName,
-        participantToken: participantToken,
-        participantName: participantIdentity,
-        permissions: {
-          audio: audioPermission,
-          video: videoPermission,
-          screen: screenPermission
-        }
-      };
-
-      const headers = new Headers({
-        "Cache-Control": "no-store",
-      });
-      return NextResponse.json(data, { headers });
-
-    } catch (e: unknown) {
-      console.error(`Failed to create room: ${e}`);
-      throw e;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(error);
-      return new NextResponse(error.message, { status: 500 });
-    }
+    return await handleRequest(permissions);
+  } catch (error: any) {
+    console.error(error);
+    return new NextResponse(error.message ?? "Unknown error", { status: 500 });
   }
 }
