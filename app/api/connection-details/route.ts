@@ -90,6 +90,7 @@ export async function GET(request: Request) {
     const sessionResponse = await createSessionAPI(studyId, participantId);
 
     // Room metadata payload with updated fields from session response
+    //       llm_config: "pc-modera-ce0173",
     const payload = {
       agentId: "",
       organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
@@ -99,7 +100,6 @@ export async function GET(request: Request) {
       sessionId: sessionResponse.data.sessionId,
       tenantId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
       name: "Sankeerth",
-      llm_config: "pc-modera-ce0173",
       timestamp: Date.now(),
       callType: "web",
       phoneNumber: "",
@@ -227,7 +227,6 @@ export async function POST(request: Request) {
       agentId: "",
       organizationId: "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
       callId: roomName,
-      llm_config: "pc-modera-ce0173",
       studyId: sessionResponse.data.studyId,
       participantId: sessionResponse.data.participantId,
       sessionId: sessionResponse.data.sessionId,
