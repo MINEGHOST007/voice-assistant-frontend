@@ -43,7 +43,7 @@ async function callCreateSessionAPI(options: {
   const requestBody = {
     studyId,
     email: "N/A",
-    name: "Voice Assistant User",
+    name: "Sankeerth",
     participantId,
     contact: participantId,
     deviceDetails: {
@@ -64,7 +64,7 @@ async function callCreateSessionAPI(options: {
     },
   };
 
-  const resp = await fetch(`http://localhost:3001/participant/api/session/${studyId}/create`, {
+  const resp = await fetch(`http://localhost:3001/api/session/${studyId}/create`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -156,3 +156,4 @@ export async function POST(request: Request) {
     return new NextResponse(error.message ?? "Unknown error", { status: 500 });
   }
 }
+

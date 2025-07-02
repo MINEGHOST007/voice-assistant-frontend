@@ -153,6 +153,95 @@ class AgentRPCClient {
       };
     }
   }
+
+  async callPing(message?: string): Promise<InteractionResponse> {
+    try {
+      const agentParticipant = Array.from(this.room.remoteParticipants.values()).find(
+        (p) => p.identity.includes("voice_assistant") || p.identity.includes("agent")
+      );
+      if (!agentParticipant) {
+        throw new Error("Agent participant not found");
+      }
+      const payload = message ? { message } : {};
+
+      // Try primary ping method first
+      const response = await this.room.localParticipant.performRpc({
+        destinationIdentity: agentParticipant.identity,
+        method: "agent.ping",
+        payload: JSON.stringify(payload),
+        responseTimeout: 5000,
+      });
+      return JSON.parse(response);
+    } catch (error) {
+      // If ping is not supported, gracefully fall back to agent.hello
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.toLowerCase().includes("not supported")) {
+        try {
+          const helloRes = await this.callHelloWorld(message ?? "frontend");
+          return helloRes as unknown as InteractionResponse;
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      console.error("Error calling ping RPC:", error);
+      return {
+        success: false,
+        message: `Error: ${errMsg}`,
+      } as InteractionResponse;
+    }
+  }
+
+  async callClick(data: Record<string, unknown>): Promise<InteractionResponse> {
+    return this.genericCall("agent.click", data);
+  }
+
+  async callScreenChange(data: Record<string, unknown>): Promise<InteractionResponse> {
+    return this.genericCall("agent.screenChange", data);
+  }
+
+  async callTranscription(data: Record<string, unknown>): Promise<InteractionResponse> {
+    return this.genericCall("agent.transcription", data);
+  }
+
+  async callMoveToNextTask(taskId: string | number, reason?: string): Promise<InteractionResponse> {
+    return this.genericCall("agent.moveToNextTask", { task_id: taskId, reason });
+  }
+
+  async callEndTask(
+    taskId: string | number,
+    reason?: string,
+    markCompleted = true
+  ): Promise<InteractionResponse> {
+    return this.genericCall("agent.endTask", {
+      task_id: taskId,
+      reason,
+      mark_completed: markCompleted,
+    });
+  }
+
+  private async genericCall(method: string, data: Record<string, unknown>): Promise<InteractionResponse> {
+    try {
+      const agentParticipant = Array.from(this.room.remoteParticipants.values()).find(
+        (p) => p.identity.includes("voice_assistant") || p.identity.includes("agent")
+      );
+      if (!agentParticipant) {
+        throw new Error("Agent participant not found");
+      }
+      const response = await this.room.localParticipant.performRpc({
+        destinationIdentity: agentParticipant.identity,
+        method,
+        payload: JSON.stringify(data ?? {}),
+        responseTimeout: 5000,
+      });
+      return JSON.parse(response);
+    } catch (error) {
+      console.error(`Error calling ${method} RPC:`, error);
+      return {
+        success: false,
+        message: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      } as InteractionResponse;
+    }
+  }
 }
 
 type PermissionSettings = {
@@ -474,6 +563,64 @@ export default function Page() {
     };
   }, [room, addRpcLog, onDeviceFailure]);
 
+  const handlePing = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const res = await client.callPing("Ping from UI");
+    console.log("Ping response", res);
+    alert(res.success ? `Pong: ${JSON.stringify(res.data ?? res)}` : `Ping failed: ${res.message}`);
+  }, [room]);
+
+  const handleScreenChange = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const payload = {
+      tenantId: "demoTenant",
+      fileKey: "fileKey123",
+      frameId: "frame-1",
+      timestamp: Date.now(),
+    };
+    const res = await client.callScreenChange(payload);
+    console.log("ScreenChange response", res);
+  }, [room]);
+
+  const handleClick = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const payload = {
+      tenantId: "demoTenant",
+      fileKey: "fileKey123",
+      frameId: "frame-1",
+      nodeId: "node-99",
+      timestamp: Date.now(),
+      coordinates: { x: 10, y: 20 },
+    };
+    const res = await client.callClick(payload);
+    console.log("Click response", res);
+  }, [room]);
+
+  const handleTranscription = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const payload = { transcribedText: "Hello agent", timestamp: Date.now() };
+    const res = await client.callTranscription(payload);
+    console.log("Transcription response", res);
+  }, [room]);
+
+  const handleMoveNext = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const res = await client.callMoveToNextTask(1, "UI test");
+    console.log("MoveNext response", res);
+  }, [room]);
+
+  const handleEndTask = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const res = await client.callEndTask(1, "UI end task");
+    console.log("EndTask response", res);
+  }, [room]);
+
   return (
     <main data-lk-theme="default" className="h-full grid content-center bg-[var(--lk-bg)]">
       <RoomContext.Provider value={room}>
@@ -483,6 +630,12 @@ export default function Page() {
             onPermissionSelected={onPermissionSelected}
             selectedPermissions={selectedPermissions}
             rpcLogs={rpcLogs}
+            handlePing={handlePing}
+            handleScreenChange={handleScreenChange}
+            handleClick={handleClick}
+            handleTranscription={handleTranscription}
+            handleMoveNext={handleMoveNext}
+            handleEndTask={handleEndTask}
           />
         </div>
       </RoomContext.Provider>
@@ -495,6 +648,12 @@ function SimpleVoiceAssistant(props: {
   onPermissionSelected: (permissions: PermissionSettings) => void;
   selectedPermissions: PermissionSettings | null;
   rpcLogs: RpcLogEntry[];
+  handlePing: () => void;
+  handleScreenChange: () => void;
+  handleClick: () => void;
+  handleTranscription: () => void;
+  handleMoveNext: () => void;
+  handleEndTask: () => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
 
@@ -538,7 +697,7 @@ function SimpleVoiceAssistant(props: {
               <TranscriptionView />
             </div>
             <div className="w-full">
-              <ControlBar onConnectButtonClicked={props.onConnectButtonClicked} />
+              <ControlBar onConnectButtonClicked={props.onConnectButtonClicked} handlePing={props.handlePing} handleScreenChange={props.handleScreenChange} handleClick={props.handleClick} handleTranscription={props.handleTranscription} handleMoveNext={props.handleMoveNext} handleEndTask={props.handleEndTask} />
             </div>
             <div className="w-full">
               <RpcLogger logs={props.rpcLogs} />
@@ -575,7 +734,15 @@ function AgentVisualizer() {
   );
 }
 
-function ControlBar(props: { onConnectButtonClicked: () => void }) {
+function ControlBar(props: {
+  onConnectButtonClicked: () => void;
+  handlePing: () => void;
+  handleScreenChange: () => void;
+  handleClick: () => void;
+  handleTranscription: () => void;
+  handleMoveNext: () => void;
+  handleEndTask: () => void;
+}) {
   const { state: agentState } = useVoiceAssistant();
   const room = useContext(RoomContext);
 
@@ -679,6 +846,12 @@ function ControlBar(props: { onConnectButtonClicked: () => void }) {
             >
               <CloseIcon />
             </button>
+            <button onClick={props.handlePing} className="h-[36px] bg-[#0c3110] hover:bg-[#1a6b22] text-white px-3 rounded text-xs">Ping</button>
+            <button onClick={props.handleScreenChange} className="h-[36px] bg-[#10310c] hover:bg-[#226b1a] text-white px-3 rounded text-xs">Screen</button>
+            <button onClick={props.handleClick} className="h-[36px] bg-[#101031] hover:bg-[#1a226b] text-white px-3 rounded text-xs">Click</button>
+            <button onClick={props.handleTranscription} className="h-[36px] bg-[#31100c] hover:bg-[#6b221a] text-white px-3 rounded text-xs">Transcribe</button>
+            <button onClick={props.handleMoveNext} className="h-[36px] bg-[#310c31] hover:bg-[#6b1a6b] text-white px-3 rounded text-xs">NextTask</button>
+            <button onClick={props.handleEndTask} className="h-[36px] bg-[#31210c] hover:bg-[#6b3a1a] text-white px-3 rounded text-xs">EndTask</button>
           </motion.div>
         )}
       </AnimatePresence>
