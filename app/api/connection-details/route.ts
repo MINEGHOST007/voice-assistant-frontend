@@ -136,9 +136,10 @@ export async function GET(request: Request) {
       screen: searchParams.get("screen") === "true",
     };
     return await handleRequest(permissions);
-  } catch (error: any) {
+  } catch (error) {
     console.error(error);
-    return new NextResponse(error.message ?? "Unknown error", { status: 500 });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return new NextResponse(message, { status: 500 });
   }
 }
 
@@ -151,9 +152,10 @@ export async function POST(request: Request) {
       screen: !!reqBody.screen,
     };
     return await handleRequest(permissions);
-  } catch (error: any) {
+  } catch (error) {
     console.error(error);
-    return new NextResponse(error.message ?? "Unknown error", { status: 500 });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return new NextResponse(message, { status: 500 });
   }
 }
 

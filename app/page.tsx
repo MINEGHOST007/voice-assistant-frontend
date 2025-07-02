@@ -179,7 +179,7 @@ class AgentRPCClient {
         try {
           const helloRes = await this.callHelloWorld(message ?? "frontend");
           return helloRes as unknown as InteractionResponse;
-        } catch (_) {
+        } catch {
           /* ignore */
         }
       }
