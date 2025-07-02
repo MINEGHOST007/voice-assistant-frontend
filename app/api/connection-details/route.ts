@@ -64,7 +64,7 @@ async function callCreateSessionAPI(options: {
     },
   };
 
-  const resp = await fetch(`http://localhost:3001/api/session/${studyId}/create`, {
+  const resp = await fetch(`https://dev.userology.co/participant/api/session/${studyId}/create`, {
     method: "POST",
     headers: {
       accept: "application/json",
