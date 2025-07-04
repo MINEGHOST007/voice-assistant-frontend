@@ -52,6 +52,12 @@ interface RpcLogEntry {
   data: Record<string, unknown>;
 }
 
+// URL parsing interface
+interface ParsedUrl {
+  studyId: string;
+  tenantId: string;
+}
+
 // RPC Client for agent communication
 class AgentRPCClient {
   private room: Room;
@@ -318,6 +324,38 @@ export default function Page() {
   const [selectedPermissions, setSelectedPermissions] = useState<PermissionSettings | null>(null);
   const [rpcLogs, setRpcLogs] = useState<RpcLogEntry[]>([]);
   const [shouldAutoDisconnect, setShouldAutoDisconnect] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [parsedUrl, setParsedUrl] = useState<ParsedUrl | null>(null);
+
+  // Parse URL to extract studyId and tenantId
+  const parseUrl = useCallback((url: string): ParsedUrl | null => {
+    try {
+      const urlObj = new URL(url);
+      const studyId = urlObj.searchParams.get("studyId");
+      const tenantId = urlObj.searchParams.get("tenantId");
+      
+      if (!studyId || !tenantId) {
+        return null;
+      }
+      
+      return { studyId, tenantId };
+    } catch (error) {
+      console.error("Failed to parse URL:", error);
+      return null;
+    }
+  }, []);
+
+  const handleUrlSubmit = useCallback(() => {
+    console.log("🔍 Submitting URL:", urlInput);
+    const parsed = parseUrl(urlInput);
+    console.log("🔍 Parsed result:", parsed);
+    if (parsed) {
+      setParsedUrl(parsed);
+      console.log("🔍 Set parsedUrl to:", parsed);
+    } else {
+      alert("Invalid URL. Please enter a valid URL with studyId and tenantId parameters.");
+    }
+  }, [urlInput, parseUrl]);
 
   const addRpcLog = useCallback((event: string, data: Record<string, unknown>) => {
     const currentTimeMs = Date.now();
@@ -357,6 +395,11 @@ export default function Page() {
           console.error("❌ Auto disconnect failed:", error);
         }
         setShouldAutoDisconnect(false);
+        // Reset state to go back to URL input form
+        setParsedUrl(null);
+        setSelectedPermissions(null);
+        setUrlInput("");
+        setRpcLogs([]);
       };
       autoDisconnect();
     }
@@ -367,8 +410,18 @@ export default function Page() {
   }, []);
 
   const onConnectButtonClicked = useCallback(async () => {
+    console.log("🔍 onConnectButtonClicked called");
+    console.log("🔍 selectedPermissions:", selectedPermissions);
+    console.log("🔍 parsedUrl:", parsedUrl);
+    
     if (!selectedPermissions) {
       console.error("No permissions selected");
+      return;
+    }
+
+    if (!parsedUrl) {
+      console.error("No URL parsed - cannot proceed without studyId and tenantId");
+      alert("Please enter a valid URL first");
       return;
     }
 
@@ -428,12 +481,23 @@ export default function Page() {
         window.location.origin
       );
 
+      const requestBody = {
+        ...selectedPermissions,
+        studyId: parsedUrl.studyId,
+        tenantId: parsedUrl.tenantId,
+      };
+      
+      console.log("📤 Sending to API:", requestBody);
+      console.log("🔍 Parsed URL data:", parsedUrl);
+      console.log("🔍 StudyId being sent:", parsedUrl.studyId);
+      console.log("🔍 TenantId being sent:", parsedUrl.tenantId);
+      
       const response = await fetch(url.toString(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(selectedPermissions),
+        body: JSON.stringify(requestBody),
       });
 
       const connectionDetailsData: ConnectionDetails = await response.json();
@@ -460,7 +524,7 @@ export default function Page() {
       console.error("❌ Connection failed:", error);
       alert("Failed to connect to the session. Please try again.");
     }
-  }, [room, selectedPermissions]);
+  }, [room, selectedPermissions, parsedUrl]);
 
   const onDeviceFailure = useCallback((error: Error) => {
     console.error(error);
@@ -529,6 +593,11 @@ export default function Page() {
     // Add debug listener for all disconnect events
     room.on(RoomEvent.Disconnected, (reason) => {
       console.log(`🔌 Room disconnected, reason: ${reason}`);
+      // Reset state to go back to URL input form
+      setParsedUrl(null);
+      setSelectedPermissions(null);
+      setUrlInput("");
+      setRpcLogs([]);
     });
 
     // Graceful shutdown on page unload/refresh/close
@@ -636,6 +705,10 @@ export default function Page() {
             handleTranscription={handleTranscription}
             handleMoveNext={handleMoveNext}
             handleEndTask={handleEndTask}
+            urlInput={urlInput}
+            setUrlInput={setUrlInput}
+            handleUrlSubmit={handleUrlSubmit}
+            parsedUrl={parsedUrl}
           />
         </div>
       </RoomContext.Provider>
@@ -654,6 +727,10 @@ function SimpleVoiceAssistant(props: {
   handleTranscription: () => void;
   handleMoveNext: () => void;
   handleEndTask: () => void;
+  urlInput: string;
+  setUrlInput: (url: string) => void;
+  handleUrlSubmit: () => void;
+  parsedUrl: ParsedUrl | null;
 }) {
   const { state: agentState } = useVoiceAssistant();
 
@@ -669,7 +746,13 @@ function SimpleVoiceAssistant(props: {
             transition={{ duration: 0.3, ease: [0.09, 1.04, 0.245, 1.055] }}
             className="grid items-center justify-center h-full"
           >
-            {!props.selectedPermissions ? (
+            {!props.parsedUrl ? (
+              <UrlInputForm
+                urlInput={props.urlInput}
+                setUrlInput={props.setUrlInput}
+                handleUrlSubmit={props.handleUrlSubmit}
+              />
+            ) : !props.selectedPermissions ? (
               <PermissionSelector onPermissionSelected={props.onPermissionSelected} />
             ) : (
               <motion.button
@@ -856,6 +939,47 @@ function ControlBar(props: {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function UrlInputForm(props: {
+  urlInput: string;
+  setUrlInput: (url: string) => void;
+  handleUrlSubmit: () => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="w-full max-w-md mx-auto"
+    >
+      <h2 className="text-xl font-semibold text-white mb-6 text-center">
+        Enter Retell URL
+      </h2>
+      <div className="space-y-4">
+        <div>
+          <label htmlFor="url-input" className="block text-sm font-medium text-gray-300 mb-2">
+            Retell URL
+          </label>
+          <input
+            id="url-input"
+            type="url"
+            value={props.urlInput}
+            onChange={(e) => props.setUrlInput(e.target.value)}
+            placeholder="https://participant-dev.userology.co/unmoderated-test/invitationPage?studyId=...&tenantId=..."
+            className="w-full p-3 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        <button
+          onClick={props.handleUrlSubmit}
+          disabled={!props.urlInput.trim()}
+          className="w-full p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors duration-200"
+        >
+          Continue
+        </button>
+      </div>
+    </motion.div>
   );
 }
 

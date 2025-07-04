@@ -25,6 +25,8 @@ export type PermissionRequest = {
   audio: boolean;
   video: boolean;
   screen: boolean;
+  studyId?: string;
+  tenantId?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -36,8 +38,14 @@ export type PermissionRequest = {
 async function callCreateSessionAPI(options: {
   video: boolean;
   screen: boolean;
+  studyId?: string;
+  tenantId?: string;
 }) {
-  const studyId = "3_voice_sections_1749236892371"; // TODO: externalise when needed
+  console.log("🔍 callCreateSessionAPI options:", options);
+  const studyId = options.studyId || "3_voice_sections_1749236892371"; // fallback to default
+  const tenantId = options.tenantId || "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2"; // fallback to default
+  console.log("🔍 Using studyId:", studyId);
+  console.log("🔍 Using tenantId:", tenantId);
   const participantId = Math.random().toString(36).substring(2, 12);
 
   const requestBody = {
@@ -70,7 +78,7 @@ async function callCreateSessionAPI(options: {
       accept: "application/json",
       "content-type": "application/json",
       origin: "https://participant-dev.userology.co",
-      "x-tenant-id": "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      "x-tenant-id": tenantId,
     },
     body: JSON.stringify(requestBody),
   });
@@ -93,10 +101,16 @@ async function handleRequest(permissions: PermissionRequest) {
     throw new Error("LIVEKIT_URL environment variable is not set");
   }
 
+  console.log("🔍 API received permissions:", permissions);
+  console.log("🔍 StudyId:", permissions.studyId);
+  console.log("🔍 TenantId:", permissions.tenantId);
+
   // 1️⃣ Call backend to create the session + LiveKit credentials
   const sessionResp = await callCreateSessionAPI({
     video: permissions.video,
     screen: permissions.screen,
+    studyId: permissions.studyId,
+    tenantId: permissions.tenantId,
   });
 
   // ⏱️ Wait 1 minute before continuing so we can observe what happens after the room is created
@@ -146,10 +160,13 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const reqBody = await request.json();
+    console.log("🔍 POST request body:", reqBody);
     const permissions: PermissionRequest = {
       audio: true,
       video: !!reqBody.video,
       screen: !!reqBody.screen,
+      studyId: reqBody.studyId,
+      tenantId: reqBody.tenantId,
     };
     return await handleRequest(permissions);
   } catch (error) {
