@@ -64,7 +64,7 @@ async function callCreateSessionAPI(options: {
     },
   };
 
-  const resp = await fetch(`https://dev.userology.co/participant/api/session/${studyId}/create`, {
+  const resp = await fetch(`http://localhost:3001/api/session/${studyId}/create`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -98,10 +98,6 @@ async function handleRequest(permissions: PermissionRequest) {
     video: permissions.video,
     screen: permissions.screen,
   });
-
-  // ⏱️ Wait 1 minute before continuing so we can observe what happens after the room is created
-  //    NOTE: this will block the response; avoid in production environments with short execution timeouts.
-  await sleep(10_000);
 
   if (!sessionResp?.data?.livekit) {
     console.error("LiveKit info missing in create-session response", sessionResp);
