@@ -37,8 +37,8 @@ async function callCreateSessionAPI(options: {
   video: boolean;
   screen: boolean;
 }) {
-  const studyId = "3_voice_sections_1749236892371"; // TODO: externalise when needed
-  const participantId = Math.random().toString(36).substring(2, 12);
+  const studyId = "bottom_bar_test_1752651553019"; // TODO: externalise when needed
+  const participantId = "717dee877a";
 
   const requestBody = {
     studyId,
@@ -53,7 +53,7 @@ async function callCreateSessionAPI(options: {
       browser: "Chrome",
       browserVersion: "137",
     },
-    preview: false,
+    preview: true,
     immediateRestart: false,
     platform: "livekit",
     callType: "web",
@@ -70,7 +70,7 @@ async function callCreateSessionAPI(options: {
       accept: "application/json",
       "content-type": "application/json",
       origin: "https://participant-dev.userology.co",
-      "x-tenant-id": "t1-8f9edb37-58f8-49fe-83f8-2116a10af5d2",
+      "x-tenant-id": "playground",
     },
     body: JSON.stringify(requestBody),
   });

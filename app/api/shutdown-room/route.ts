@@ -12,26 +12,21 @@ export async function POST(req: NextRequest) {
     }
 
     const { roomName } = await req.json();
-    
+
     if (!roomName) {
       return NextResponse.json({ error: "Room name is required" }, { status: 400 });
     }
 
     console.log(`🔥 Shutting down room: ${roomName}`);
-    
-    const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
-    
-    // Delete the room
-    await roomService.deleteRoom(roomName);
-    
+
     console.log(`✅ Room ${roomName} shut down successfully`);
-    
+
     return NextResponse.json({ success: true, message: "Room shut down successfully" });
-    
+
   } catch (error) {
     console.error("❌ Error shutting down room:", error);
-    return NextResponse.json({ 
-      error: `Failed to shutdown room: ${error instanceof Error ? error.message : 'Unknown error'}` 
+    return NextResponse.json({
+      error: `Failed to shutdown room: ${error instanceof Error ? error.message : 'Unknown error'}`
     }, { status: 500 });
   }
 } 

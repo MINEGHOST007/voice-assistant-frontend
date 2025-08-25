@@ -203,8 +203,11 @@ class AgentRPCClient {
     return this.genericCall("agent.transcription", data);
   }
 
-  async callMoveToNextTask(taskId: string | number, reason?: string): Promise<InteractionResponse> {
-    return this.genericCall("agent.moveToNextTask", { task_id: taskId, reason });
+  async callMoveToNextTask(
+    taskId: string | number | undefined,
+    reason?: string
+  ): Promise<InteractionResponse> {
+    return this.genericCall("agent.moveToTask", { task_id: taskId, reason });
   }
 
   async callEndTask(
@@ -219,7 +222,10 @@ class AgentRPCClient {
     });
   }
 
-  private async genericCall(method: string, data: Record<string, unknown>): Promise<InteractionResponse> {
+  private async genericCall(
+    method: string,
+    data: Record<string, unknown>
+  ): Promise<InteractionResponse> {
     try {
       const agentParticipant = Array.from(this.room.remoteParticipants.values()).find(
         (p) => p.identity.includes("voice_assistant") || p.identity.includes("agent")
@@ -260,17 +266,19 @@ async function gracefulDisconnectAndShutdown(room: Room) {
     }
 
     // 1️⃣ Unpublish & stop every local track (audio / video / screenshare)
-    const publicationMap: Map<string, TrackPublication> = (
-      room.localParticipant as unknown as {
-        trackPublications?: Map<string, TrackPublication>;
-        tracks?: Map<string, TrackPublication>;
-      }
-    ).trackPublications ??
+    const publicationMap: Map<string, TrackPublication> =
+      (
+        room.localParticipant as unknown as {
+          trackPublications?: Map<string, TrackPublication>;
+          tracks?: Map<string, TrackPublication>;
+        }
+      ).trackPublications ??
       (
         room.localParticipant as unknown as {
           tracks?: Map<string, TrackPublication>;
         }
-      ).tracks ?? new Map<string, TrackPublication>();
+      ).tracks ??
+      new Map<string, TrackPublication>();
 
     for (const publication of Array.from(publicationMap.values())) {
       const track = publication.track;
@@ -575,10 +583,13 @@ export default function Page() {
     if (!room) return;
     const client = new AgentRPCClient(room);
     const payload = {
-      tenantId: "demoTenant",
-      fileKey: "fileKey123",
-      frameId: "frame-1",
+      studyId: "trial_be_dev_1747032012869",
+      participantId: "d14a8c2e6c",
+      sessionId: "828",
+      frameId: "5:2",
+      fileKey: "OffWxM3U1J3PpskRMuGDbZ",
       timestamp: Date.now(),
+      taskNumber: 3,
     };
     const res = await client.callScreenChange(payload);
     console.log("ScreenChange response", res);
@@ -588,12 +599,17 @@ export default function Page() {
     if (!room) return;
     const client = new AgentRPCClient(room);
     const payload = {
-      tenantId: "demoTenant",
-      fileKey: "fileKey123",
-      frameId: "frame-1",
-      nodeId: "node-99",
+      studyId: "trial_be_dev_1747032012869",
+      participantId: "d14a8c2e6c",
+      sessionId: "828",
+      frameId: "5:2",
+      fileKey: "OffWxM3U1J3PpskRMuGDbZ",
+      nodeId: "125:471",
+      newFrameId: "23:294",
       timestamp: Date.now(),
-      coordinates: { x: 10, y: 20 },
+      taskNumber: 3,
+      coordinates: { x: -1, y: -1 },
+      animation: false,
     };
     const res = await client.callClick(payload);
     console.log("Click response", res);
@@ -610,14 +626,14 @@ export default function Page() {
   const handleMoveNext = useCallback(async () => {
     if (!room) return;
     const client = new AgentRPCClient(room);
-    const res = await client.callMoveToNextTask(1, "UI test");
+    const res = await client.callMoveToNextTask(2, "UI test");
     console.log("MoveNext response", res);
   }, [room]);
 
   const handleEndTask = useCallback(async () => {
     if (!room) return;
     const client = new AgentRPCClient(room);
-    const res = await client.callEndTask(1, "UI end task");
+    const res = await client.callMoveToNextTask(undefined, "UI test");
     console.log("EndTask response", res);
   }, [room]);
 
@@ -697,7 +713,15 @@ function SimpleVoiceAssistant(props: {
               <TranscriptionView />
             </div>
             <div className="w-full">
-              <ControlBar onConnectButtonClicked={props.onConnectButtonClicked} handlePing={props.handlePing} handleScreenChange={props.handleScreenChange} handleClick={props.handleClick} handleTranscription={props.handleTranscription} handleMoveNext={props.handleMoveNext} handleEndTask={props.handleEndTask} />
+              <ControlBar
+                onConnectButtonClicked={props.onConnectButtonClicked}
+                handlePing={props.handlePing}
+                handleScreenChange={props.handleScreenChange}
+                handleClick={props.handleClick}
+                handleTranscription={props.handleTranscription}
+                handleMoveNext={props.handleMoveNext}
+                handleEndTask={props.handleEndTask}
+              />
             </div>
             <div className="w-full">
               <RpcLogger logs={props.rpcLogs} />
@@ -846,12 +870,42 @@ function ControlBar(props: {
             >
               <CloseIcon />
             </button>
-            <button onClick={props.handlePing} className="h-[36px] bg-[#0c3110] hover:bg-[#1a6b22] text-white px-3 rounded text-xs">Ping</button>
-            <button onClick={props.handleScreenChange} className="h-[36px] bg-[#10310c] hover:bg-[#226b1a] text-white px-3 rounded text-xs">Screen</button>
-            <button onClick={props.handleClick} className="h-[36px] bg-[#101031] hover:bg-[#1a226b] text-white px-3 rounded text-xs">Click</button>
-            <button onClick={props.handleTranscription} className="h-[36px] bg-[#31100c] hover:bg-[#6b221a] text-white px-3 rounded text-xs">Transcribe</button>
-            <button onClick={props.handleMoveNext} className="h-[36px] bg-[#310c31] hover:bg-[#6b1a6b] text-white px-3 rounded text-xs">NextTask</button>
-            <button onClick={props.handleEndTask} className="h-[36px] bg-[#31210c] hover:bg-[#6b3a1a] text-white px-3 rounded text-xs">EndTask</button>
+            <button
+              onClick={props.handlePing}
+              className="h-[36px] bg-[#0c3110] hover:bg-[#1a6b22] text-white px-3 rounded text-xs"
+            >
+              Ping
+            </button>
+            <button
+              onClick={props.handleScreenChange}
+              className="h-[36px] bg-[#10310c] hover:bg-[#226b1a] text-white px-3 rounded text-xs"
+            >
+              Screen
+            </button>
+            <button
+              onClick={props.handleClick}
+              className="h-[36px] bg-[#101031] hover:bg-[#1a226b] text-white px-3 rounded text-xs"
+            >
+              Click
+            </button>
+            <button
+              onClick={props.handleTranscription}
+              className="h-[36px] bg-[#31100c] hover:bg-[#6b221a] text-white px-3 rounded text-xs"
+            >
+              Transcribe
+            </button>
+            <button
+              onClick={props.handleMoveNext}
+              className="h-[36px] bg-[#310c31] hover:bg-[#6b1a6b] text-white px-3 rounded text-xs"
+            >
+              NextTask
+            </button>
+            <button
+              onClick={props.handleEndTask}
+              className="h-[36px] bg-[#31210c] hover:bg-[#6b3a1a] text-white px-3 rounded text-xs"
+            >
+              EndTask
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
