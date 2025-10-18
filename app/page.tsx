@@ -3,6 +3,7 @@
 import { CloseIcon } from "@/components/CloseIcon";
 import { NoAgentNotification } from "@/components/NoAgentNotification";
 import TranscriptionView from "@/components/TranscriptionView";
+import ChatHistory from "@/components/ChatHistory";
 import {
   BarVisualizer,
   RoomAudioRenderer,
@@ -713,15 +714,10 @@ function SimpleVoiceAssistant(props: {
               <TranscriptionView />
             </div>
             <div className="w-full">
-              <ControlBar
-                onConnectButtonClicked={props.onConnectButtonClicked}
-                handlePing={props.handlePing}
-                handleScreenChange={props.handleScreenChange}
-                handleClick={props.handleClick}
-                handleTranscription={props.handleTranscription}
-                handleMoveNext={props.handleMoveNext}
-                handleEndTask={props.handleEndTask}
-              />
+              <ChatHistory className="mb-4" />
+            </div>
+            <div className="w-full">
+              <ControlBar onConnectButtonClicked={props.onConnectButtonClicked} handlePing={props.handlePing} handleScreenChange={props.handleScreenChange} handleClick={props.handleClick} handleTranscription={props.handleTranscription} handleMoveNext={props.handleMoveNext} handleEndTask={props.handleEndTask} />
             </div>
             <div className="w-full">
               <RpcLogger logs={props.rpcLogs} />
