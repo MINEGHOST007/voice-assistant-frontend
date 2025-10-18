@@ -45,6 +45,14 @@ interface InteractionResponse {
   data?: Record<string, unknown>;
 }
 
+interface ChatEditRequest {
+  edits: Array<{
+    id: string;
+    content?: string;
+    delete?: boolean;
+  }>;
+}
+
 interface RpcLogEntry {
   id: string;
   timestamp: number;
@@ -79,10 +87,11 @@ class AgentRPCClient {
         destinationIdentity: agentParticipant.identity,
         method: "agent.hello",
         payload: JSON.stringify(requestData),
-        responseTimeout: 5000,
+        responseTimeout: 30000,
       });
 
       const result: HelloWorldResponse = JSON.parse(response);
+      console.log("[RPC] agent.hello response:", result);
       return result;
     } catch (error) {
       console.error("Error calling hello world RPC:", error);
@@ -112,10 +121,11 @@ class AgentRPCClient {
         destinationIdentity: agentParticipant.identity,
         method: "agent.interaction",
         payload: JSON.stringify(requestData),
-        responseTimeout: 5000,
+        responseTimeout: 30000,
       });
 
       const result: InteractionResponse = JSON.parse(response);
+      console.log("[RPC] agent.interaction response:", result);
       return result;
     } catch (error) {
       console.error("Error calling interaction RPC:", error);
@@ -140,10 +150,11 @@ class AgentRPCClient {
         destinationIdentity: agentParticipant.identity,
         method: "agent.close",
         payload: JSON.stringify({ call_id: callId }),
-        responseTimeout: 5000,
+        responseTimeout: 30000,
       });
 
       const result: InteractionResponse = JSON.parse(response);
+      console.log("[RPC] agent.close response:", result);
       return result;
     } catch (error) {
       console.error("Error calling close RPC:", error);
@@ -169,15 +180,18 @@ class AgentRPCClient {
         destinationIdentity: agentParticipant.identity,
         method: "agent.ping",
         payload: JSON.stringify(payload),
-        responseTimeout: 5000,
+        responseTimeout: 30000,
       });
-      return JSON.parse(response);
+      const result = JSON.parse(response);
+      console.log("[RPC] agent.ping response:", result);
+      return result;
     } catch (error) {
       // If ping is not supported, gracefully fall back to agent.hello
       const errMsg = error instanceof Error ? error.message : String(error);
       if (errMsg.toLowerCase().includes("not supported")) {
         try {
           const helloRes = await this.callHelloWorld(message ?? "frontend");
+          console.log("[RPC] agent.ping fallback (agent.hello) response:", helloRes);
           return helloRes as unknown as InteractionResponse;
         } catch {
           /* ignore */
@@ -222,6 +236,18 @@ class AgentRPCClient {
     });
   }
 
+  async callEditChatContext(edits: Array<{id: string; content?: string; delete?: boolean}>): Promise<InteractionResponse> {
+    return this.genericCall("agent.editChatContext", { edits });
+  }
+
+  async callPauseSession(reason?: string): Promise<InteractionResponse> {
+    return this.genericCall("agent.pauseSession", { reason });
+  }
+
+  async callResumeSession(reason?: string): Promise<InteractionResponse> {
+    return this.genericCall("agent.resumeSession", { reason });
+  }
+
   private async genericCall(
     method: string,
     data: Record<string, unknown>
@@ -237,9 +263,11 @@ class AgentRPCClient {
         destinationIdentity: agentParticipant.identity,
         method,
         payload: JSON.stringify(data ?? {}),
-        responseTimeout: 5000,
+        responseTimeout: 30000,
       });
-      return JSON.parse(response);
+      const result = JSON.parse(response);
+      console.log(`[RPC] ${method} response:`, result);
+      return result;
     } catch (error) {
       console.error(`Error calling ${method} RPC:`, error);
       return {
@@ -256,7 +284,15 @@ type PermissionSettings = {
   screen: boolean;
 };
 
-// Helper to gracefully leave the room, stop local media and shutdown the LiveKit room on the server
+type RoomSession = {
+  roomName: string;
+  serverUrl: string;
+  participantToken: string;
+  permissions: PermissionSettings;
+  timestamp: number;
+};
+
+// Helper to gracefully leave the room and stop local media (no room deletion)
 async function gracefulDisconnectAndShutdown(room: Room) {
   try {
     // If we are not connected there is nothing to do
@@ -295,27 +331,7 @@ async function gracefulDisconnectAndShutdown(room: Room) {
 
     // 2️⃣ Disconnect from the room
     await room.disconnect();
-    console.log("✅ Graceful disconnect completed");
-
-    // 3️⃣ Ask backend to delete the room so the session ends on the server as well
-    const roomName = room.name;
-    if (roomName) {
-      try {
-        const response = await fetch("/api/shutdown-room", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ roomName }),
-        });
-        const result = await response.json();
-        if (response.ok) {
-          console.log("✅ Room deletion successful:", result.message);
-        } else {
-          console.error("❌ Room deletion failed:", result.error);
-        }
-      } catch (err) {
-        console.error("❌ Failed to call shutdown-room endpoint:", err);
-      }
-    }
+    console.log("✅ Graceful disconnect completed (room kept alive for restart)");
   } catch (err) {
     console.error("❌ gracefulDisconnectAndShutdown failed:", err);
   }
@@ -326,6 +342,51 @@ export default function Page() {
   const [selectedPermissions, setSelectedPermissions] = useState<PermissionSettings | null>(null);
   const [rpcLogs, setRpcLogs] = useState<RpcLogEntry[]>([]);
   const [shouldAutoDisconnect, setShouldAutoDisconnect] = useState(false);
+  const [availableRestart, setAvailableRestart] = useState<RoomSession | null>(null);
+
+  // Save room session to localStorage for restart
+  const saveRoomSession = useCallback((roomName: string, serverUrl: string, participantToken: string, permissions: PermissionSettings) => {
+    const session: RoomSession = {
+      roomName,
+      serverUrl,
+      participantToken,
+      permissions,
+      timestamp: Date.now()
+    };
+    localStorage.setItem('lastRoomSession', JSON.stringify(session));
+    console.log('💾 Room session saved for restart:', roomName);
+  }, []);
+
+  // Check for available restart session
+  const checkRestartSession = useCallback(() => {
+    try {
+      const saved = localStorage.getItem('lastRoomSession');
+      if (!saved) return null;
+      
+      const session: RoomSession = JSON.parse(saved);
+      const ageMinutes = (Date.now() - session.timestamp) / (1000 * 60);
+      
+      if (ageMinutes <= 5) {
+        console.log(`🔄 Found restart session (${ageMinutes.toFixed(1)} min old):`, session.roomName);
+        return session;
+      } else {
+        console.log(`⏰ Restart session too old (${ageMinutes.toFixed(1)} min), removing`);
+        localStorage.removeItem('lastRoomSession');
+        return null;
+      }
+    } catch (error) {
+      console.error('❌ Error checking restart session:', error);
+      localStorage.removeItem('lastRoomSession');
+      return null;
+    }
+  }, []);
+
+  // Clear restart session
+  const clearRestartSession = useCallback(() => {
+    localStorage.removeItem('lastRoomSession');
+    setAvailableRestart(null);
+    console.log('🗑️ Restart session cleared');
+  }, []);
 
   const addRpcLog = useCallback((event: string, data: Record<string, unknown>) => {
     const currentTimeMs = Date.now();
@@ -370,9 +431,92 @@ export default function Page() {
     }
   }, [shouldAutoDisconnect, room]);
 
+  // Check for available restart on component mount
+  useEffect(() => {
+    const restartSession = checkRestartSession();
+    if (restartSession) {
+      setAvailableRestart(restartSession);
+    }
+  }, [checkRestartSession]);
+
   const onPermissionSelected = useCallback((permissions: PermissionSettings) => {
     setSelectedPermissions(permissions);
-  }, []);
+    // Clear any restart session when selecting new permissions
+    clearRestartSession();
+  }, [clearRestartSession]);
+
+  // Restart with previous session
+  const onRestartButtonClicked = useCallback(async () => {
+    if (!availableRestart) {
+      console.error("No restart session available");
+      return;
+    }
+
+    try {
+      console.log("🔄 Restarting with previous session:", availableRestart.roomName);
+      
+      // Set permissions from saved session
+      setSelectedPermissions(availableRestart.permissions);
+
+      // Create local tracks based on saved permissions
+      const localTracks: LocalTrack[] = [];
+
+      if (availableRestart.permissions.audio) {
+        try {
+          const audioTrack = await createLocalAudioTrack();
+          localTracks.push(audioTrack);
+        } catch (micError) {
+          console.error("❌ Microphone access denied:", micError);
+          alert("Microphone access denied. Please grant microphone permission and try again.");
+          return;
+        }
+      }
+
+      if (availableRestart.permissions.video) {
+        try {
+          const videoTrack = await createLocalVideoTrack();
+          localTracks.push(videoTrack);
+        } catch (cameraError) {
+          console.error("❌ Camera access denied:", cameraError);
+          alert("Camera access denied or failed. The session will continue without video.");
+        }
+      }
+
+      if (availableRestart.permissions.screen) {
+        try {
+          const screenTracks = await createLocalScreenTracks();
+          localTracks.push(...screenTracks);
+        } catch (screenError) {
+          console.error("❌ Screen share access denied:", screenError);
+          alert("Screen share access denied or failed. The session will continue without screen sharing.");
+        }
+      }
+
+      // Connect to the same room
+      console.log("🔌 Reconnecting to previous room...");
+      await room.connect(availableRestart.serverUrl, availableRestart.participantToken);
+      console.log("✅ Reconnected to room");
+
+      // Publish all tracks
+      for (const track of localTracks) {
+        try {
+          await room.localParticipant.publishTrack(track);
+          console.log(`✅ Published ${track.kind} track`);
+        } catch (publishError) {
+          console.error(`❌ Failed to publish ${track.kind} track:`, publishError);
+        }
+      }
+
+      // Update the timestamp for this session
+      saveRoomSession(availableRestart.roomName, availableRestart.serverUrl, availableRestart.participantToken, availableRestart.permissions);
+      
+      console.log("🎉 Successfully restarted session!");
+    } catch (error) {
+      console.error("❌ Restart failed:", error);
+      alert("Failed to restart the session. Please start a new session.");
+      clearRestartSession();
+    }
+  }, [room, availableRestart, saveRoomSession, clearRestartSession]);
 
   const onConnectButtonClicked = useCallback(async () => {
     if (!selectedPermissions) {
@@ -451,6 +595,11 @@ export default function Page() {
       console.log("🔌 Connecting to room with pre-created tracks...");
       await room.connect(connectionDetailsData.serverUrl, connectionDetailsData.participantToken);
       console.log("✅ Connected to room");
+
+      // Save session for restart capability
+      if (room.name) {
+        saveRoomSession(room.name, connectionDetailsData.serverUrl, connectionDetailsData.participantToken, selectedPermissions);
+      }
 
       // FOURTH: Publish all pre-created tracks immediately
       console.log("📡 Publishing pre-created tracks...");
@@ -543,21 +692,9 @@ export default function Page() {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const handleBeforeUnload = async (_event: BeforeUnloadEvent) => {
       if (room.state === "connected") {
-        console.log("🚨 Page unloading - attempting graceful disconnect");
+        console.log("🚨 Page unloading - performing graceful disconnect");
 
-        // Try to signal agent to close gracefully
-        try {
-          const rpcClient = new AgentRPCClient(room);
-          const callId = room.name || "session_" + Date.now();
-          await rpcClient.callClose(callId);
-
-          // Wait briefly for agent to start disconnecting
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        } catch (error) {
-          console.error("❌ Failed to send close signal on unload:", error);
-        }
-
-        // Disconnect from room
+        // Disconnect from room without signaling agent
         console.log("👋 Performing graceful disconnect...");
         await gracefulDisconnectAndShutdown(room);
       }
@@ -637,6 +774,38 @@ export default function Page() {
     console.log("EndTask response", res);
   }, [room]);
 
+  const handlePause = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const res = await client.callPauseSession("UI pause request");
+    console.log("Pause response", res);
+    alert(res.success ? `Session paused: ${res.message}` : `Pause failed: ${res.message}`);
+  }, [room]);
+
+  const handleResume = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const res = await client.callResumeSession("UI resume request");
+    console.log("Resume response", res);
+    alert(res.success ? `Session resumed: ${res.message}` : `Resume failed: ${res.message}`);
+  }, [room]);
+
+  const handleEditChat = useCallback(async () => {
+    if (!room) return;
+    const client = new AgentRPCClient(room);
+    const payload = {
+      edits: [
+        {
+          id: "test_message_123",
+          content: "Updated message content",
+          delete: false
+        }
+      ]
+    };
+    const res = await client.callEditChatContext(payload.edits);
+    console.log("EditChat response", res);
+  }, [room]);
+
   return (
     <main data-lk-theme="default" className="h-full grid content-center bg-[var(--lk-bg)]">
       <RoomContext.Provider value={room}>
@@ -645,6 +814,9 @@ export default function Page() {
             onConnectButtonClicked={onConnectButtonClicked}
             onPermissionSelected={onPermissionSelected}
             selectedPermissions={selectedPermissions}
+            availableRestart={availableRestart}
+            onRestartButtonClicked={onRestartButtonClicked}
+            onClearRestart={clearRestartSession}
             rpcLogs={rpcLogs}
             handlePing={handlePing}
             handleScreenChange={handleScreenChange}
@@ -652,6 +824,9 @@ export default function Page() {
             handleTranscription={handleTranscription}
             handleMoveNext={handleMoveNext}
             handleEndTask={handleEndTask}
+            handlePause={handlePause}
+            handleResume={handleResume}
+            handleEditChat={handleEditChat}
           />
         </div>
       </RoomContext.Provider>
@@ -663,6 +838,9 @@ function SimpleVoiceAssistant(props: {
   onConnectButtonClicked: () => void;
   onPermissionSelected: (permissions: PermissionSettings) => void;
   selectedPermissions: PermissionSettings | null;
+  availableRestart: RoomSession | null;
+  onRestartButtonClicked: () => void;
+  onClearRestart: () => void;
   rpcLogs: RpcLogEntry[];
   handlePing: () => void;
   handleScreenChange: () => void;
@@ -670,6 +848,9 @@ function SimpleVoiceAssistant(props: {
   handleTranscription: () => void;
   handleMoveNext: () => void;
   handleEndTask: () => void;
+  handlePause: () => void;
+  handleResume: () => void;
+  handleEditChat: () => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
 
@@ -685,19 +866,14 @@ function SimpleVoiceAssistant(props: {
             transition={{ duration: 0.3, ease: [0.09, 1.04, 0.245, 1.055] }}
             className="grid items-center justify-center h-full"
           >
-            {!props.selectedPermissions ? (
-              <PermissionSelector onPermissionSelected={props.onPermissionSelected} />
-            ) : (
-              <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.3, delay: 0.1 }}
-                className="uppercase px-4 py-2 bg-white text-black rounded-md"
-                onClick={() => props.onConnectButtonClicked()}
-              >
-                Start a conversation
-              </motion.button>
-            )}
+            <RestartOptions
+              availableRestart={props.availableRestart}
+              selectedPermissions={props.selectedPermissions}
+              onPermissionSelected={props.onPermissionSelected}
+              onConnectButtonClicked={props.onConnectButtonClicked}
+              onRestartButtonClicked={props.onRestartButtonClicked}
+              onClearRestart={props.onClearRestart}
+            />
           </motion.div>
         ) : (
           <motion.div
@@ -721,6 +897,9 @@ function SimpleVoiceAssistant(props: {
                 handleTranscription={props.handleTranscription}
                 handleMoveNext={props.handleMoveNext}
                 handleEndTask={props.handleEndTask}
+                handlePause={props.handlePause}
+                handleResume={props.handleResume}
+                handleEditChat={props.handleEditChat}
               />
             </div>
             <div className="w-full">
@@ -766,9 +945,13 @@ function ControlBar(props: {
   handleTranscription: () => void;
   handleMoveNext: () => void;
   handleEndTask: () => void;
+  handlePause: () => void;
+  handleResume: () => void;
+  handleEditChat: () => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
   const room = useContext(RoomContext);
+  const [showEditForm, setShowEditForm] = useState(false);
 
   // RPC test handler
   const handleRPCTest = useCallback(async () => {
@@ -790,9 +973,9 @@ function ControlBar(props: {
     }
   }, [room]);
 
-  // Custom disconnect handler - only signal agent, don't disconnect yet
+  // Custom disconnect handler - just disconnect immediately without RPC calls
   const handleCustomDisconnect = useCallback(async () => {
-    console.log("🚨 SENDING CLOSE SIGNAL TO AGENT");
+    console.log("🚨 DISCONNECTING WITHOUT RPC SIGNALS");
 
     if (!room) {
       console.error("❌ No room available");
@@ -800,35 +983,11 @@ function ControlBar(props: {
     }
 
     try {
-      // Only send RPC close signal - DO NOT disconnect participant yet
-      console.log("🔄 Sending RPC close signal to agent...");
-      const rpcClient = new AgentRPCClient(room);
-      const callId = room.name || "session_" + Date.now();
-
-      await rpcClient.callClose(callId);
-      console.log("✅ RPC close signal sent - waiting for agent to send session_shutdown");
-      console.log("⏳ Agent will now process shutdown and send session_shutdown RPC...");
-
-      // 🚨 Watchdog: force disconnect if agent doesn't shut us down within 10 seconds
-      setTimeout(async () => {
-        if (room.state === "connected") {
-          console.log("⏰ Watchdog timeout reached – forcing graceful disconnect");
-          await gracefulDisconnectAndShutdown(room);
-        }
-      }, 1_000);
+      console.log("🔄 Performing graceful disconnect...");
+      await gracefulDisconnectAndShutdown(room);
+      console.log("✅ Graceful disconnect completed");
     } catch (error) {
-      console.error("❌ Error sending close signal:", error);
-
-      // Fallback: if RPC fails, disconnect manually after a delay
-      console.log("🚨 RPC failed, falling back to manual disconnect in 5 seconds...");
-      setTimeout(async () => {
-        try {
-          await gracefulDisconnectAndShutdown(room);
-          console.log("✅ Manual fallback graceful disconnect completed");
-        } catch (disconnectError) {
-          console.error("❌ Manual fallback disconnect failed:", disconnectError);
-        }
-      }, 5000);
+      console.error("❌ Disconnect failed:", error);
     }
   }, [room]);
 
@@ -906,10 +1065,137 @@ function ControlBar(props: {
             >
               EndTask
             </button>
+            <button
+              onClick={props.handlePause}
+              className="h-[36px] bg-[#31200c] hover:bg-[#6b3a1a] text-white px-3 rounded text-xs"
+            >
+              ⏸️ Pause
+            </button>
+            <button
+              onClick={props.handleResume}
+              className="h-[36px] bg-[#0c3120] hover:bg-[#1a6b3a] text-white px-3 rounded text-xs"
+            >
+              ▶️ Resume
+            </button>
+            <button
+              onClick={() => setShowEditForm(true)}
+              className="h-[36px] bg-[#0c3120] hover:bg-[#1a6b3a] text-white px-3 rounded text-xs"
+            >
+              EditChat
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Chat Edit Form Modal */}
+      <AnimatePresence>
+        {showEditForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+            onClick={() => setShowEditForm(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-gray-800 p-6 rounded-lg border border-gray-600 w-full max-w-md"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ChatEditForm 
+                onClose={() => setShowEditForm(false)}
+                onSubmit={props.handleEditChat}
+                room={room || null}
+              />
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function RestartOptions(props: {
+  availableRestart: RoomSession | null;
+  selectedPermissions: PermissionSettings | null;
+  onPermissionSelected: (permissions: PermissionSettings) => void;
+  onConnectButtonClicked: () => void;
+  onRestartButtonClicked: () => void;
+  onClearRestart: () => void;
+}) {
+  if (props.availableRestart) {
+    const ageMinutes = (Date.now() - props.availableRestart.timestamp) / (1000 * 60);
+    const permissionText = Object.entries(props.availableRestart.permissions)
+      .filter(([_, enabled]) => enabled)
+      .map(([key, _]) => key)
+      .join(" + ");
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="w-full max-w-md mx-auto space-y-4"
+      >
+        <div className="bg-blue-900/50 border border-blue-600 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-2xl">🔄</span>
+            <h2 className="text-lg font-semibold text-white">Rejoin Previous Session</h2>
+          </div>
+          <div className="text-sm text-gray-300 space-y-1">
+            <p>Room: <span className="font-mono text-blue-300">{props.availableRestart.roomName}</span></p>
+            <p>Permissions: <span className="text-blue-300">{permissionText || "none"}</span></p>
+            <p>Age: <span className="text-blue-300">{ageMinutes.toFixed(1)} minutes ago</span></p>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={props.onRestartButtonClicked}
+              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium transition-colors"
+            >
+              🚀 Rejoin Session
+            </button>
+            <button
+              onClick={props.onClearRestart}
+              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-md transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        
+        <div className="text-center text-gray-400">
+          <p>or</p>
+        </div>
+        
+        <div className="bg-gray-800/50 border border-gray-600 rounded-lg p-4">
+          <h3 className="text-white font-medium mb-3">Start New Session</h3>
+          <button
+            onClick={props.onClearRestart}
+            className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-md transition-colors"
+          >
+            Choose New Permissions
+          </button>
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (!props.selectedPermissions) {
+    return <PermissionSelector onPermissionSelected={props.onPermissionSelected} />;
+  }
+
+  return (
+    <motion.button
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3, delay: 0.1 }}
+      className="uppercase px-4 py-2 bg-white text-black rounded-md"
+      onClick={props.onConnectButtonClicked}
+    >
+      Start a conversation
+    </motion.button>
   );
 }
 
@@ -1062,5 +1348,145 @@ function RpcLogger(props: { logs: RpcLogEntry[] }) {
         </AnimatePresence>
       </div>
     </motion.div>
+  );
+}
+
+function ChatEditForm({ onClose, onSubmit, room }: { 
+  onClose: () => void; 
+  onSubmit: () => void;
+  room: Room | null;
+}) {
+  const [edits, setEdits] = useState<Array<{id: string; content: string; delete: boolean}>>([
+    { id: "", content: "", delete: false }
+  ]);
+
+  const addEdit = () => {
+    setEdits([...edits, { id: "", content: "", delete: false }]);
+  };
+
+  const removeEdit = (index: number) => {
+    if (edits.length > 1) {
+      setEdits(edits.filter((_, i) => i !== index));
+    }
+  };
+
+  const updateEdit = (index: number, field: 'id' | 'content' | 'delete', value: string | boolean) => {
+    const newEdits = [...edits];
+    newEdits[index] = { ...newEdits[index], [field]: value };
+    setEdits(newEdits);
+  };
+
+  const handleSubmit = async () => {
+    if (!room) return;
+    
+    const client = new AgentRPCClient(room);
+    const validEdits = edits.filter(edit => edit.id.trim());
+    
+    if (validEdits.length === 0) {
+      alert("Please enter at least one valid message ID");
+      return;
+    }
+
+    const payload = {
+      edits: validEdits.map(edit => ({
+        id: edit.id.trim(),
+        ...(edit.content.trim() && { content: edit.content.trim() }),
+        ...(edit.delete && { delete: true })
+      }))
+    };
+
+    try {
+      const res = await client.callEditChatContext(payload.edits);
+      console.log("EditChat response", res);
+      alert(res.success ? `Success: ${res.message}` : `Error: ${res.message}`);
+      if (res.success) {
+        onClose();
+      }
+    } catch (error) {
+      console.error("EditChat error", error);
+      alert(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h3 className="text-lg font-semibold text-white">Edit Chat Context</h3>
+        <button
+          onClick={onClose}
+          className="text-gray-400 hover:text-white"
+        >
+          ✕
+        </button>
+      </div>
+      
+      <div className="space-y-3 max-h-64 overflow-y-auto">
+        {edits.map((edit, index) => (
+          <div key={index} className="bg-gray-700 p-3 rounded border border-gray-600">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm text-gray-300">Edit #{index + 1}</span>
+              {edits.length > 1 && (
+                <button
+                  onClick={() => removeEdit(index)}
+                  className="text-red-400 hover:text-red-300 text-sm"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            
+            <div className="space-y-2">
+              <input
+                type="text"
+                placeholder="Message ID"
+                value={edit.id}
+                onChange={(e) => updateEdit(index, 'id', e.target.value)}
+                className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-white placeholder-gray-400"
+              />
+              
+              <input
+                type="text"
+                placeholder="New content (leave empty to keep current)"
+                value={edit.content}
+                onChange={(e) => updateEdit(index, 'content', e.target.value)}
+                className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded text-white placeholder-gray-400"
+              />
+              
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={edit.delete}
+                  onChange={(e) => updateEdit(index, 'delete', e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">Delete message</span>
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
+      
+      <div className="flex space-x-2">
+        <button
+          onClick={addEdit}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+        >
+          Add Another Edit
+        </button>
+        
+        <button
+          onClick={handleSubmit}
+          className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-sm flex-1"
+        >
+          Submit Edits
+        </button>
+      </div>
+      
+      <div className="text-xs text-gray-400">
+        <p>• Enter message ID to identify the message to edit</p>
+        <p>• Enter new content to update, or leave empty to keep current</p>
+        <p>• Check "Delete message" to remove the message entirely</p>
+      </div>
+    </div>
   );
 }

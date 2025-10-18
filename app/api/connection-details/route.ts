@@ -37,34 +37,61 @@ async function callCreateSessionAPI(options: {
   video: boolean;
   screen: boolean;
 }) {
-  const studyId = "bottom_bar_test_1752651553019"; // TODO: externalise when needed
-  const participantId = "717dee877a";
+  const studyId = "bottom_bar_test_1752651553019";
+  const participantId = "6c1c81b9ee";
 
   const requestBody = {
     studyId,
     email: "N/A",
-    name: "Sankeerth",
+    name: "Shanks Restart Test",
     participantId,
     contact: participantId,
     deviceDetails: {
-      height: 1361,
-      width: 1674,
+      height: 988,
+      width: 1699,
       deviceType: "desktop",
       browser: "Chrome",
-      browserVersion: "137",
+      browserVersion: "140",
     },
-    preview: true,
-    immediateRestart: false,
+    isTest: false,
+    preview: false,
+    restartSessionId: "1705",
+    restartData: {
+      sessions: ["1705"],
+      tasksMap: {
+        "0": {
+          section: 1,
+          status: "Ended",
+          session: "1705"
+        },
+        "1": {
+          section: 2,
+          status: "Started",
+          session: "1705"
+        },
+        "2": {
+          section: 3,
+          status: "Not Started",
+          session: "1705"
+        },
+        "3": {
+          section: 4,
+          status: "Not Started",
+          session: "1705"
+        }
+      },
+      section: 1,
+      frameId: "1:133"
+    },
     platform: "livekit",
-    callType: "web",
-    phoneNumber: "",
+    language: "en-US",
     perimissions: {
       video: options.video,
       screen: options.screen,
     },
   };
 
-  const resp = await fetch(`http://localhost:3001/api/session/${studyId}/create`, {
+  const resp = await fetch(`https://dev.userology.co/participant/api/session/${studyId}/create`, {
     method: "POST",
     headers: {
       accept: "application/json",
