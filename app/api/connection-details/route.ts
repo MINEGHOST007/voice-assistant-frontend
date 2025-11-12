@@ -25,6 +25,7 @@ export type PermissionRequest = {
   audio: boolean;
   video: boolean;
   screen: boolean;
+  platform?: "livekit" | "native";
 };
 
 // ---------------------------------------------------------------------------
@@ -36,9 +37,10 @@ export type PermissionRequest = {
 async function callCreateSessionAPI(options: {
   video: boolean;
   screen: boolean;
+  platform?: "livekit" | "native";
 }) {
   const studyId = "bottom_bar_test_1752651553019";
-  const participantId = "6c1c81b9ee";
+  const participantId = "6c1c81b9e1";
 
   const requestBody = {
     studyId,
@@ -55,35 +57,35 @@ async function callCreateSessionAPI(options: {
     },
     isTest: false,
     preview: false,
-    restartSessionId: "1705",
-    restartData: {
-      sessions: ["1705"],
-      tasksMap: {
-        "0": {
-          section: 1,
-          status: "Ended",
-          session: "1705"
-        },
-        "1": {
-          section: 2,
-          status: "Started",
-          session: "1705"
-        },
-        "2": {
-          section: 3,
-          status: "Not Started",
-          session: "1705"
-        },
-        "3": {
-          section: 4,
-          status: "Not Started",
-          session: "1705"
-        }
-      },
-      section: 1,
-      frameId: "1:133"
-    },
-    platform: "livekit",
+    // restartSessionId: "1705",
+    // restartData: {
+    //   sessions: ["1705"],
+    //   tasksMap: {
+    //     "0": {
+    //       section: 1,
+    //       status: "Ended",
+    //       session: "1705"
+    //     },
+    //     "1": {
+    //       section: 2,
+    //       status: "Started",
+    //       session: "1705"
+    //     },
+    //     "2": {
+    //       section: 3,
+    //       status: "Not Started",
+    //       session: "1705"
+    //     },
+    //     "3": {
+    //       section: 4,
+    //       status: "Not Started",
+    //       session: "1705"
+    //     }
+    //   },
+    //   section: 1,
+    //   frameId: "1:133"
+    // },
+    platform: options.platform || "livekit",
     language: "en-US",
     perimissions: {
       video: options.video,
@@ -124,6 +126,7 @@ async function handleRequest(permissions: PermissionRequest) {
   const sessionResp = await callCreateSessionAPI({
     video: permissions.video,
     screen: permissions.screen,
+    platform: permissions.platform,
   });
 
   if (!sessionResp?.data?.livekit) {
@@ -173,6 +176,7 @@ export async function POST(request: Request) {
       audio: true,
       video: !!reqBody.video,
       screen: !!reqBody.screen,
+      platform: reqBody.platform || "livekit",
     };
     return await handleRequest(permissions);
   } catch (error) {

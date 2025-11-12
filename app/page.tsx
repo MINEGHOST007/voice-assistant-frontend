@@ -343,6 +343,7 @@ export default function Page() {
   const [rpcLogs, setRpcLogs] = useState<RpcLogEntry[]>([]);
   const [shouldAutoDisconnect, setShouldAutoDisconnect] = useState(false);
   const [availableRestart, setAvailableRestart] = useState<RoomSession | null>(null);
+  const [isNativePlatformMode, setIsNativePlatformMode] = useState(false);
 
   // Save room session to localStorage for restart
   const saveRoomSession = useCallback((roomName: string, serverUrl: string, participantToken: string, permissions: PermissionSettings) => {
@@ -806,6 +807,67 @@ export default function Page() {
     console.log("EditChat response", res);
   }, [room]);
 
+  // Test screen share with platform native
+  const handleTestScreenShare = useCallback(async () => {
+    try {
+      console.log("🧪 Starting screen share test with platform native...");
+
+      // FIRST: Create screen share tracks IMMEDIATELY while user gesture is active
+      // This must happen before any async operations to satisfy browser security requirements
+      console.log("🖥️ Creating screen share tracks (must be done during user gesture)...");
+      const screenTracks = await createLocalScreenTracks();
+      console.log(`✅ Created ${screenTracks.length} screen track(s)`);
+
+      // SECOND: Call API with platform native and screen enabled
+      const url = new URL(
+        process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT ?? "/api/connection-details",
+        window.location.origin
+      );
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          audio: true,
+          video: false,
+          screen: true,
+          platform: "native",
+        }),
+      });
+
+      const connectionDetailsData: ConnectionDetails = await response.json();
+      console.log("✅ Connection details received for screen share test");
+
+      // THIRD: Connect to room
+      console.log("🔌 Connecting to room...");
+      await room.connect(connectionDetailsData.serverUrl, connectionDetailsData.participantToken);
+      console.log("✅ Connected to room");
+
+      // FOURTH: Publish screen share tracks
+      console.log("📡 Publishing screen share tracks...");
+      for (const track of screenTracks) {
+        try {
+          await room.localParticipant.publishTrack(track);
+          console.log(`✅ Published ${track.kind} track (source: ${track.source})`);
+        } catch (publishError) {
+          console.error(`❌ Failed to publish ${track.kind} track:`, publishError);
+        }
+      }
+
+      console.log("🎉 Screen share test completed - tracks published!");
+      
+      // Mark as native platform mode (no agent expected)
+      setIsNativePlatformMode(true);
+      
+      alert("Screen share test: Connected and screen tracks published!");
+    } catch (error) {
+      console.error("❌ Screen share test failed:", error);
+      alert(`Screen share test failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [room]);
+
   return (
     <main data-lk-theme="default" className="h-full grid content-center bg-[var(--lk-bg)]">
       <RoomContext.Provider value={room}>
@@ -827,6 +889,10 @@ export default function Page() {
             handlePause={handlePause}
             handleResume={handleResume}
             handleEditChat={handleEditChat}
+            handleTestScreenShare={handleTestScreenShare}
+            room={room}
+            isNativePlatformMode={isNativePlatformMode}
+            setIsNativePlatformMode={setIsNativePlatformMode}
           />
         </div>
       </RoomContext.Provider>
@@ -851,13 +917,74 @@ function SimpleVoiceAssistant(props: {
   handlePause: () => void;
   handleResume: () => void;
   handleEditChat: () => void;
+  handleTestScreenShare: () => void;
+  room: Room;
+  isNativePlatformMode: boolean;
+  setIsNativePlatformMode: (value: boolean) => void;
 }) {
   const { state: agentState } = useVoiceAssistant();
+  const isConnected = props.room.state === "connected";
+  const showNativeModeUI = props.isNativePlatformMode && isConnected;
 
   return (
     <>
       <AnimatePresence mode="wait">
-        {agentState === "disconnected" ? (
+        {showNativeModeUI ? (
+          <motion.div
+            key="native-connected"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.3 }}
+            className="flex flex-col items-center gap-4 h-full"
+          >
+            <div className="bg-blue-900/50 border border-blue-600 rounded-lg p-6 max-w-md w-full">
+              <h2 className="text-xl font-semibold text-white mb-4">🖥️ Screen Share Recording Active</h2>
+              <p className="text-gray-300 mb-4">
+                Your screen is being recorded. The recording will continue until you leave the room.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    const roomName = props.room.name;
+                    try {
+                      await new Promise(resolve => setTimeout(resolve, 2000));
+                      await gracefulDisconnectAndShutdown(props.room);
+                      setTimeout(async () => {
+                        try {
+                          const resp = await fetch("/api/livekit/room/delete", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ roomName }),
+                          });
+                          if (!resp.ok) {
+                            const txt = await resp.text();
+                            console.warn("Room delete failed:", txt);
+                          } else {
+                            console.log("Room deleted successfully");
+                          }
+                        } catch (e) {
+                          console.warn("Room delete request error", e);
+                        }
+                      }, 3000);
+                      alert("Left room - egress should finalize, room will be deleted shortly");
+                      // Reset native mode to show permission selector again
+                      setTimeout(() => {
+                        props.setIsNativePlatformMode(false);
+                      }, 100);
+                    } catch (error) {
+                      console.error("Failed to leave room:", error);
+                      alert(`Failed to leave room: ${error instanceof Error ? error.message : "Unknown error"}`);
+                    }
+                  }}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md font-medium transition-colors"
+                >
+                  Leave Room
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        ) : agentState === "disconnected" ? (
           <motion.div
             key="disconnected"
             initial={{ opacity: 0, scale: 0.95 }}
@@ -873,6 +1000,8 @@ function SimpleVoiceAssistant(props: {
               onConnectButtonClicked={props.onConnectButtonClicked}
               onRestartButtonClicked={props.onRestartButtonClicked}
               onClearRestart={props.onClearRestart}
+              handleTestScreenShare={props.handleTestScreenShare}
+              room={props.room}
             />
           </motion.div>
         ) : (
@@ -900,6 +1029,8 @@ function SimpleVoiceAssistant(props: {
                 handlePause={props.handlePause}
                 handleResume={props.handleResume}
                 handleEditChat={props.handleEditChat}
+                handleTestScreenShare={props.handleTestScreenShare}
+                room={props.room}
               />
             </div>
             <div className="w-full">
@@ -948,9 +1079,12 @@ function ControlBar(props: {
   handlePause: () => void;
   handleResume: () => void;
   handleEditChat: () => void;
+  handleTestScreenShare: () => void;
+  room: Room;
 }) {
   const { state: agentState } = useVoiceAssistant();
-  const room = useContext(RoomContext);
+  const contextRoom = useContext(RoomContext);
+  const room = props.room || contextRoom;
   const [showEditForm, setShowEditForm] = useState(false);
 
   // RPC test handler
@@ -977,19 +1111,19 @@ function ControlBar(props: {
   const handleCustomDisconnect = useCallback(async () => {
     console.log("🚨 DISCONNECTING WITHOUT RPC SIGNALS");
 
-    if (!room) {
+    if (!props.room) {
       console.error("❌ No room available");
       return;
     }
 
     try {
       console.log("🔄 Performing graceful disconnect...");
-      await gracefulDisconnectAndShutdown(room);
+      await gracefulDisconnectAndShutdown(props.room);
       console.log("✅ Graceful disconnect completed");
     } catch (error) {
       console.error("❌ Disconnect failed:", error);
     }
-  }, [room]);
+  }, [props.room]);
 
   return (
     <div className="relative h-[60px]">
@@ -1107,7 +1241,7 @@ function ControlBar(props: {
               <ChatEditForm 
                 onClose={() => setShowEditForm(false)}
                 onSubmit={props.handleEditChat}
-                room={room || null}
+                room={contextRoom || null}
               />
             </motion.div>
           </motion.div>
@@ -1124,6 +1258,8 @@ function RestartOptions(props: {
   onConnectButtonClicked: () => void;
   onRestartButtonClicked: () => void;
   onClearRestart: () => void;
+  handleTestScreenShare?: () => void;
+  room?: Room;
 }) {
   if (props.availableRestart) {
     const ageMinutes = (Date.now() - props.availableRestart.timestamp) / (1000 * 60);
@@ -1183,7 +1319,7 @@ function RestartOptions(props: {
   }
 
   if (!props.selectedPermissions) {
-    return <PermissionSelector onPermissionSelected={props.onPermissionSelected} />;
+    return <PermissionSelector onPermissionSelected={props.onPermissionSelected} onTestScreenShare={props.handleTestScreenShare} room={props.room} />;
   }
 
   return (
@@ -1201,6 +1337,8 @@ function RestartOptions(props: {
 
 function PermissionSelector(props: {
   onPermissionSelected: (permissions: PermissionSettings) => void;
+  onTestScreenShare?: () => void;
+  room?: Room;
 }) {
   const permissionOptions = [
     {
@@ -1235,6 +1373,47 @@ function PermissionSelector(props: {
     },
   ];
 
+  const handleLeaveRoom = useCallback(async () => {
+    if (!props.room || props.room.state !== "connected") {
+      alert("Not connected to a room");
+      return;
+    }
+    const roomName = props.room.name;
+    try {
+      // Wait a bit for egress to finalize before disconnecting
+      console.log("Waiting 2 seconds for egress to finalize...");
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      await gracefulDisconnectAndShutdown(props.room);
+      console.log("Disconnected from room");
+      
+      // Delete the room on the server (platform native test cleanup)
+      // Wait a bit more before deleting to ensure egress completes
+      setTimeout(async () => {
+        try {
+          const resp = await fetch("/api/livekit/room/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ roomName }),
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            console.warn("Room delete failed:", txt);
+          } else {
+            console.log("Room deleted successfully");
+          }
+        } catch (e) {
+          console.warn("Room delete request error", e);
+        }
+      }, 3000); // Wait 3 more seconds before deleting
+      
+      alert("Left room - egress should finalize, room will be deleted shortly");
+    } catch (error) {
+      console.error("Failed to leave room:", error);
+      alert(`Failed to leave room: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [props.room]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -1245,6 +1424,38 @@ function PermissionSelector(props: {
       <h2 className="text-xl font-semibold text-white mb-6 text-center">
         Choose Recording Permissions
       </h2>
+      
+      {/* Test Screen Share Button */}
+      {props.onTestScreenShare && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+          className="mb-4 p-4 bg-blue-900/50 border border-blue-600 rounded-lg"
+        >
+          <div className="text-white font-medium mb-2">🧪 Test Screen Share (Platform Native)</div>
+          <div className="text-sm text-gray-300 mb-3">
+            Test screen sharing with platform native - creates session and publishes screen share
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={props.onTestScreenShare}
+              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium transition-colors"
+            >
+              🖥️ Start Screen Share Test
+            </button>
+            {props.room?.state === "connected" && (
+              <button
+                onClick={handleLeaveRoom}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md font-medium transition-colors"
+              >
+                Leave Room
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
+
       <div className="space-y-3">
         {permissionOptions.map((option, index) => (
           <motion.button
